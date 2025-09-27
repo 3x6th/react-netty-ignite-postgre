@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: psw
+    ports:
+      - "5432:5432"
+    volumes:
+      # Персистим данные и скрипты инициализации
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U partner -d partnerdb"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  ignite:
+    image: apacheignite/ignite:2.16.0
+    container_name: ignite
+    ports:
+      - "10800:10800"   # Thin client
+      - "47100:47100"   # Discovery
+      - "47500:47500"   # Communication
+      - "49112:49112"   # JMX (не обязателен, но полезен)
+    environment:
+      # Просто более подробный лог в консоль
+      - IGNITE_QUIET=false
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/10800' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  pg_data:
