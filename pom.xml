@@ -82,6 +82,12 @@
       <scope>provided</scope>
     </dependency>
 
+    <dependency>
+      <groupId>org.openjdk.jol</groupId>
+      <artifactId>jol-core</artifactId>
+      <version>0.17</version> <!-- актуальная версия на 2025 -->
+    </dependency>
+
   </dependencies>
 
   <build>

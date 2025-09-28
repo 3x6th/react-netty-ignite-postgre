@@ -16,7 +16,7 @@ ignite:
   cache-name: partner_cache
 
 warmup:
-  enabled: true
+  enabled: false
   records: 1_500_000
-  batch-size: 5_000
+  batch-size: 2_000
   block-until-done: true

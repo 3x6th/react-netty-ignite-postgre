@@ -10,7 +10,7 @@ import reactor.core.publisher.Mono;
 import ru.spasibo.react_netty_ignite_postgre.service.PartnerService;
 
 @RestController
-@RequestMapping("/v1")
+@RequestMapping("/check")
 @Slf4j
 public class PartnerController {
 
@@ -20,11 +20,30 @@ public class PartnerController {
         this.service = service;
     }
 
-    @GetMapping("/check")
-    public Mono<Map<String, Object>> check(
+    @GetMapping("/postgres")
+    public Mono<Map<String, Object>> checkPg(
             @RequestParam String merchant,
             @RequestParam String terminal) {
-        return service.checkBoth(merchant, terminal)
+        log.info("call");
+        return service.getFromPostgres(merchant, terminal)
+                      .doOnNext(m -> log.info("check result: {}", m));
+    }
+
+    @GetMapping("/ignite")
+    public Mono<Map<String, Object>> checkIg(
+            @RequestParam String merchant,
+            @RequestParam String terminal) {
+        log.info("call");
+        return service.getFromIgnite(merchant, terminal)
+                      .doOnNext(m -> log.info("check result: {}", m));
+    }
+
+    @GetMapping("/map")
+    public Mono<Map<String, Object>> checkMp(
+            @RequestParam String merchant,
+            @RequestParam String terminal) {
+        log.info("call");
+        return service.getFromMap(merchant, terminal)
                       .doOnNext(m -> log.info("check result: {}", m));
     }
 

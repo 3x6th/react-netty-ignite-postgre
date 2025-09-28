@@ -28,6 +28,7 @@ public class DataWarmup {
     private final DatabaseClient dbc;
     private final IgniteClient igniteClient;
     private final ClientCache<String, Boolean> partnerCache;
+    private final PartnerService partnerService;
 
     @Value("${warmup.enabled:true}")
     private boolean enabled;
@@ -55,47 +56,89 @@ public class DataWarmup {
     @Bean
     ApplicationRunner warmupRunner() {
         return args -> {
-            if (!enabled) {
-                log.info("Warmup is disabled");
-                return;
-            }
             log.info(
-                    "Warmup start: rows={}, batchSize={}, block={}",
-                    rows,
-                    batchSize,
-                    blockUntilDone
+                    "Warmup config: enabled={}, rows={}, batchSize={}, block={}",
+                    enabled, rows, batchSize, blockUntilDone
             );
 
-            Mono<Void> task =
-                    Mono.when(clearPg(), clearIgnite()) // 1. сначала очистка
-                        .thenMany(Flux.range(1, rows)
-                                      .map(this::gen)
-                                      .buffer(batchSize)
-                                      .concatMap(batch -> {
-                                          Instant started = Instant.now();
+            Mono<Void> task;
 
-                                          Mono<Long> pg = insertBatchPg(batch)
-                                                  .doOnSuccess(cnt -> log.info(
-                                                          "PG batch inserted: {} rows in {} ms",
-                                                          cnt,
-                                                          Duration.between(started, Instant.now())
-                                                                  .toMillis()
-                                                  ));
+            if (!enabled) {
+                // --- ТОЛЬКО ConcurrentHashMap ---
+                log.info("Warmup disabled -> filling only ConcurrentHashMap");
+                task =
+                        clearHashMap()
+                                .thenMany(Flux.range(1, rows)
+                                              .map(this::gen)
+                                              .buffer(batchSize)
+                                              .concatMap(batch -> {
+                                                  Instant started = Instant.now();
+                                                  return insertHashMap(batch)
+                                                          .doOnSuccess(cnt -> log.info(
+                                                                  "ConcurrentHashMap batch inserted: {} rows in {} ms",
+                                                                  cnt,
+                                                                  Duration.between(
+                                                                          started,
+                                                                          Instant.now()
+                                                                  ).toMillis()
+                                                          ))
+                                                          .then();
+                                              }))
+                                .then()
+                                .doOnSubscribe(s -> log.info("CHM warmup streaming started"))
+                                .doOnSuccess(v -> {
+                                    log.info("CHM warmup finished successfully");
+                                    partnerService.logSizeMap();
+                                })
+                                .doOnError(e -> log.error("CHM warmup failed", e));
+            } else {
+                // --- Полный прогон: очистка и вставка во все источники ---
+                log.info("Warmup enabled -> filling Postgres, Ignite, ConcurrentHashMap");
+                task =
+                        Mono.when(clearPg(), clearIgnite(), clearHashMap())
+                            .thenMany(Flux.range(1, rows)
+                                          .map(this::gen)
+                                          .buffer(batchSize)
+                                          .concatMap(batch -> {
+                                              Instant started = Instant.now();
 
-                                          Mono<Integer> ig = insertBatchIgnite(batch)
-                                                  .doOnSuccess(cnt -> log.info(
-                                                          "Ignite batch inserted: {} rows in {} ms",
-                                                          cnt,
-                                                          Duration.between(started, Instant.now())
-                                                                  .toMillis()
-                                                  ));
+                                              Mono<Long> pg = insertBatchPg(batch)
+                                                      .doOnSuccess(cnt -> log.info(
+                                                              "PG batch inserted: {} rows in {} ms",
+                                                              cnt,
+                                                              Duration.between(
+                                                                      started,
+                                                                      Instant.now()
+                                                              ).toMillis()
+                                                      ));
 
-                                          return Mono.when(pg, ig).then();
-                                      }))
-                        .then()
-                        .doOnSubscribe(s -> log.info("Warmup streaming started"))
-                        .doOnSuccess(v -> log.info("Warmup finished successfully"))
-                        .doOnError(e -> log.error("Warmup failed", e));
+                                              Mono<Integer> ig = insertBatchIgnite(batch)
+                                                      .doOnSuccess(cnt -> log.info(
+                                                              "Ignite batch inserted: {} rows in {} ms",
+                                                              cnt,
+                                                              Duration.between(
+                                                                      started,
+                                                                      Instant.now()
+                                                              ).toMillis()
+                                                      ));
+
+                                              Mono<Integer> mg = insertHashMap(batch)
+                                                      .doOnSuccess(cnt -> log.info(
+                                                              "ConcurrentHashMap batch inserted: {} rows in {} ms",
+                                                              cnt,
+                                                              Duration.between(
+                                                                      started,
+                                                                      Instant.now()
+                                                              ).toMillis()
+                                                      ));
+
+                                              return Mono.when(pg, ig, mg).then();
+                                          }))
+                            .then()
+                            .doOnSubscribe(s -> log.info("Warmup streaming started"))
+                            .doOnSuccess(v -> log.info("Warmup finished successfully"))
+                            .doOnError(e -> log.error("Warmup failed", e));
+            }
 
             if (blockUntilDone) {
                 task.block();
@@ -121,6 +164,17 @@ public class DataWarmup {
                        log.info("Clearing Ignite cache...");
                        partnerCache.clear();
                        log.info("Ignite cache cleared");
+                   })
+                   .subscribeOn(Schedulers.boundedElastic())
+                   .then();
+    }
+
+    /** Очистка ConcurrentHashMap кэша. */
+    private Mono<Void> clearHashMap() {
+        return Mono.fromRunnable(() -> {
+                       log.info("Clearing ConcurrentHashMap...");
+                       partnerService.clearMap();
+                       log.info("ConcurrentHashMap cleared");
                    })
                    .subscribeOn(Schedulers.boundedElastic())
                    .then();
@@ -154,6 +208,22 @@ public class DataWarmup {
                                                                () -> new HashMap<>(batch.size())
                                                        ));
                        partnerCache.putAll(map);
+                       return map.size();
+                   })
+                   .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** Батч-вставка в ConcurrentHashMap. */
+    private Mono<Integer> insertHashMap(List<PartnerFlag> batch) {
+        return Mono.fromCallable(() -> {
+                       Map<String, Boolean> map = batch.stream()
+                                                       .collect(Collectors.toMap(
+                                                               r -> key(r.merchantCode(), r.terminalId()),
+                                                               PartnerFlag::partner,
+                                                               (a, b) -> b,
+                                                               () -> new HashMap<>(batch.size())
+                                                       ));
+                       partnerService.putInMap(map);
                        return map.size();
                    })
                    .subscribeOn(Schedulers.boundedElastic());
