@@ -66,59 +66,74 @@ public class PartnerService {
 
     /** 1) Postgres (полностью реактивно) */
     public Mono<Map<String, Object>> getFromPostgres(String merchant, String terminal) {
-        Instant start = Instant.now();
+        long startNanos = System.nanoTime();
         return repo.findFirstByMerchantCodeAndTerminalId(merchant, terminal)
                    .map(PartnerFlag::partner)
                    .defaultIfEmpty(false)
-                   .map(v -> Map.of(
-                           "merchant", merchant,
-                           "terminal", terminal,
-                           "postgresPartner", v,
-                           "millis", Duration.between(start, Instant.now()).toMillis()
-                   ));
+                   .map(v -> {
+                       long nanos = System.nanoTime() - startNanos;
+                       return Map.of(
+                               "merchant", merchant,
+                               "terminal", terminal,
+                               "postgresPartner", v,
+                               "nanos", nanos,
+                               "millis", nanos / 1_000_000
+                       );
+                   });
     }
 
     /** 2) Ignite (блокирующий thin client — на boundedElastic) */
     public Mono<Map<String, Object>> getFromIgnite(String merchant, String terminal) {
-        Instant start = Instant.now();
+        long startNanos = System.nanoTime();
         return Mono.fromCallable(() -> igniteCache.get(cacheKey(merchant, terminal)))
                    .subscribeOn(Schedulers.boundedElastic())
                    .map(v -> v != null && v)
-                   .map(v -> Map.of(
-                           "merchant", merchant,
-                           "terminal", terminal,
-                           "ignitePartner", v,
-                           "millis", Duration.between(start, Instant.now()).toMillis()
-                   ));
+                   .map(v -> {
+                       long nanos = System.nanoTime() - startNanos;
+                       return Map.of(
+                               "merchant", merchant,
+                               "terminal", terminal,
+                               "ignitePartner", v,
+                               "nanos", nanos,
+                               "millis", nanos / 1_000_000
+                       );
+                   });
         // Ошибки НЕ гасим: пробрасываем наружу
     }
 
     /** 3) ConcurrentHashMap (локальный кэш, неблокирующий) */
     public Mono<Map<String, Object>> getFromMap(String merchant, String terminal) {
-        Instant start = Instant.now();
+        long startNanos = System.nanoTime();
         return Mono.fromSupplier(() -> map.get(cacheKey(merchant, terminal)))
                    .map(v -> v != null && v)
-                   .map(v -> Map.of(
-                           "merchant", merchant,
-                           "terminal", terminal,
-                           "mPartner", v,
-                           "millis", Duration.between(start, Instant.now()).toMillis()
-                   ));
+                   .map(v -> {
+                       long nanos = System.nanoTime() - startNanos;
+                       return Map.of(
+                               "merchant", merchant,
+                               "terminal", terminal,
+                               "mPartner", v,
+                               "nanos", nanos,
+                               "millis", nanos / 1_000_000
+                       );
+                   });
         // Ошибки НЕ гасим: пробрасываем наружу
     }
 
-    /** 4) Hazelcast (встроенный кэш, блокирующий — на boundedElastic) */
+    /** 4) Hazelcast (встроенный кэш, реактивный) */
     public Mono<Map<String, Object>> getFromHazelcast(String merchant, String terminal) {
-        Instant start = Instant.now();
-        return Mono.fromCallable(() -> hazelcastCache.get(cacheKey(merchant, terminal)))
-                   .subscribeOn(Schedulers.boundedElastic())
+        long startNanos = System.nanoTime();
+        return Mono.fromCompletionStage(hazelcastCache.getAsync(cacheKey(merchant, terminal)))
                    .map(v -> v != null && v)
-                   .map(v -> Map.of(
-                           "merchant", merchant,
-                           "terminal", terminal,
-                           "hazelcastPartner", v,
-                           "millis", Duration.between(start, Instant.now()).toMillis()
-                   ));
+                   .map(v -> {
+                       long nanos = System.nanoTime() - startNanos;
+                       return Map.of(
+                               "merchant", merchant,
+                               "terminal", terminal,
+                               "hazelcastPartner", v,
+                               "nanos", nanos,
+                               "millis", nanos / 1_000_000
+                       );
+                   });
         // Ошибки НЕ гасим: пробрасываем наружу
     }
 
