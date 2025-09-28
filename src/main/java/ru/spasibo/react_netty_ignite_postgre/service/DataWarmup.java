@@ -63,39 +63,50 @@ public class DataWarmup {
 
             Mono<Void> task;
 
-            if (!enabled) {
-                // --- ТОЛЬКО ConcurrentHashMap ---
-                log.info("Warmup disabled -> filling only ConcurrentHashMap");
-                task =
-                        clearHashMap()
-                                .thenMany(Flux.range(1, rows)
-                                              .map(this::gen)
-                                              .buffer(batchSize)
-                                              .concatMap(batch -> {
-                                                  Instant started = Instant.now();
-                                                  return insertHashMap(batch)
-                                                          .doOnSuccess(cnt -> log.info(
-                                                                  "ConcurrentHashMap batch inserted: {} rows in {} ms",
-                                                                  cnt,
-                                                                  Duration.between(
-                                                                          started,
-                                                                          Instant.now()
-                                                                  ).toMillis()
-                                                          ))
-                                                          .then();
-                                              }))
-                                .then()
-                                .doOnSubscribe(s -> log.info("CHM warmup streaming started"))
-                                .doOnSuccess(v -> {
-                                    log.info("CHM warmup finished successfully");
-                                    partnerService.logSizeMap();
-                                })
-                                .doOnError(e -> log.error("CHM warmup failed", e));
+             if (!enabled) {
+                 // --- ТОЛЬКО ConcurrentHashMap и Hazelcast ---
+                 log.info("Warmup disabled -> filling only ConcurrentHashMap and Hazelcast");
+                 task =
+                         Mono.when(clearHashMap(), clearHazelcast())
+                                 .thenMany(Flux.range(1, rows)
+                                               .map(this::gen)
+                                               .buffer(batchSize)
+                                               .concatMap(batch -> {
+                                                   Instant started = Instant.now();
+                                                   return Mono.when(
+                                                           insertHashMap(batch)
+                                                                   .doOnSuccess(cnt -> log.info(
+                                                                           "ConcurrentHashMap batch inserted: {} rows in {} ms",
+                                                                           cnt,
+                                                                           Duration.between(
+                                                                                   started,
+                                                                                   Instant.now()
+                                                                           ).toMillis()
+                                                                   )),
+                                                           insertHazelcast(batch)
+                                                                   .doOnSuccess(cnt -> log.info(
+                                                                           "Hazelcast batch inserted: {} rows in {} ms",
+                                                                           cnt,
+                                                                           Duration.between(
+                                                                                   started,
+                                                                                   Instant.now()
+                                                                           ).toMillis()
+                                                                   ))
+                                                   ).then();
+                                               }))
+                                 .then()
+                                 .doOnSubscribe(s -> log.info("CHM + Hazelcast warmup streaming started"))
+                                 .doOnSuccess(v -> {
+                                     log.info("CHM + Hazelcast warmup finished successfully");
+                                     partnerService.logSizeMap();
+                                     partnerService.logHazelcastStats();
+                                 })
+                                 .doOnError(e -> log.error("CHM + Hazelcast warmup failed", e));
             } else {
                 // --- Полный прогон: очистка и вставка во все источники ---
-                log.info("Warmup enabled -> filling Postgres, Ignite, ConcurrentHashMap");
+                log.info("Warmup enabled -> filling Postgres, Ignite, ConcurrentHashMap, Hazelcast");
                 task =
-                        Mono.when(clearPg(), clearIgnite(), clearHashMap())
+                        Mono.when(clearPg(), clearIgnite(), clearHashMap(), clearHazelcast())
                             .thenMany(Flux.range(1, rows)
                                           .map(this::gen)
                                           .buffer(batchSize)
@@ -132,11 +143,25 @@ public class DataWarmup {
                                                               ).toMillis()
                                                       ));
 
-                                              return Mono.when(pg, ig, mg).then();
+                                              Mono<Integer> hz = insertHazelcast(batch)
+                                                      .doOnSuccess(cnt -> log.info(
+                                                              "Hazelcast batch inserted: {} rows in {} ms",
+                                                              cnt,
+                                                              Duration.between(
+                                                                      started,
+                                                                      Instant.now()
+                                                              ).toMillis()
+                                                      ));
+
+                                              return Mono.when(pg, ig, mg, hz).then();
                                           }))
                             .then()
                             .doOnSubscribe(s -> log.info("Warmup streaming started"))
-                            .doOnSuccess(v -> log.info("Warmup finished successfully"))
+                            .doOnSuccess(v -> {
+                                log.info("Warmup finished successfully");
+                                partnerService.logSizeMap();
+                                partnerService.logHazelcastStats();
+                            })
                             .doOnError(e -> log.error("Warmup failed", e));
             }
 
@@ -224,6 +249,33 @@ public class DataWarmup {
                                                                () -> new HashMap<>(batch.size())
                                                        ));
                        partnerService.putInMap(map);
+                       return map.size();
+                   })
+                   .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** Очистка Hazelcast кэша. */
+    private Mono<Void> clearHazelcast() {
+        return Mono.fromRunnable(() -> {
+                       log.info("Clearing Hazelcast cache...");
+                       partnerService.clearHazelcast();
+                       log.info("Hazelcast cache cleared");
+                   })
+                   .subscribeOn(Schedulers.boundedElastic())
+                   .then();
+    }
+
+    /** Батч-вставка в Hazelcast. */
+    private Mono<Integer> insertHazelcast(List<PartnerFlag> batch) {
+        return Mono.fromCallable(() -> {
+                       Map<String, Boolean> map = batch.stream()
+                                                       .collect(Collectors.toMap(
+                                                               r -> key(r.merchantCode(), r.terminalId()),
+                                                               PartnerFlag::partner,
+                                                               (a, b) -> b,
+                                                               () -> new HashMap<>(batch.size())
+                                                       ));
+                       partnerService.putInHazelcast(map);
                        return map.size();
                    })
                    .subscribeOn(Schedulers.boundedElastic());

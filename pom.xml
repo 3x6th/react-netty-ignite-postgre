@@ -88,6 +88,16 @@
       <version>0.17</version> <!-- актуальная версия на 2025 -->
     </dependency>
 
+    <!-- Hazelcast embedded cache -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-cache</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.hazelcast</groupId>
+      <artifactId>hazelcast-spring</artifactId>
+    </dependency>
+
   </dependencies>
 
   <build>

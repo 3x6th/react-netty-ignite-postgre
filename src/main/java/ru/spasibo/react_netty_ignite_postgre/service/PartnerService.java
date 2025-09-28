@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import com.hazelcast.map.IMap;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.ignite.client.ClientCache;
 import org.openjdk.jol.info.GraphLayout;
@@ -18,13 +19,15 @@ import ru.spasibo.react_netty_ignite_postgre.postgres.PartnerFlagRepository;
 public class PartnerService {
 
     private final PartnerFlagRepository repo;
-    private final ClientCache<String, Boolean> cache;
+    private final ClientCache<String, Boolean> igniteCache;
+    private final IMap<String, Boolean> hazelcastCache;
 
     private final ConcurrentHashMap<String, Boolean> map = new ConcurrentHashMap<>();
 
-    public PartnerService(PartnerFlagRepository repo, ClientCache<String, Boolean> cache) {
+    public PartnerService(PartnerFlagRepository repo, ClientCache<String, Boolean> igniteCache, IMap<String, Boolean> hazelcastCache) {
         this.repo = repo;
-        this.cache = cache;
+        this.igniteCache = igniteCache;
+        this.hazelcastCache = hazelcastCache;
     }
 
     public void putInMap(Map<String, Boolean> keyValue) {
@@ -43,6 +46,18 @@ public class PartnerService {
                 totalSize,
                 String.format("%.2f", mb)
         );
+    }
+
+    public void putInHazelcast(Map<String, Boolean> keyValue) {
+        hazelcastCache.putAll(keyValue);
+    }
+
+    public void clearHazelcast() {
+        hazelcastCache.clear();
+    }
+
+    public void logHazelcastStats() {
+        log.info("Hazelcast cache size: {} entries", hazelcastCache.size());
     }
 
     private String cacheKey(String merchant, String terminal) {
@@ -66,7 +81,7 @@ public class PartnerService {
     /** 2) Ignite (блокирующий thin client — на boundedElastic) */
     public Mono<Map<String, Object>> getFromIgnite(String merchant, String terminal) {
         Instant start = Instant.now();
-        return Mono.fromCallable(() -> cache.get(cacheKey(merchant, terminal)))
+        return Mono.fromCallable(() -> igniteCache.get(cacheKey(merchant, terminal)))
                    .subscribeOn(Schedulers.boundedElastic())
                    .map(v -> v != null && v)
                    .map(v -> Map.of(
@@ -87,6 +102,21 @@ public class PartnerService {
                            "merchant", merchant,
                            "terminal", terminal,
                            "mPartner", v,
+                           "millis", Duration.between(start, Instant.now()).toMillis()
+                   ));
+        // Ошибки НЕ гасим: пробрасываем наружу
+    }
+
+    /** 4) Hazelcast (встроенный кэш, блокирующий — на boundedElastic) */
+    public Mono<Map<String, Object>> getFromHazelcast(String merchant, String terminal) {
+        Instant start = Instant.now();
+        return Mono.fromCallable(() -> hazelcastCache.get(cacheKey(merchant, terminal)))
+                   .subscribeOn(Schedulers.boundedElastic())
+                   .map(v -> v != null && v)
+                   .map(v -> Map.of(
+                           "merchant", merchant,
+                           "terminal", terminal,
+                           "hazelcastPartner", v,
                            "millis", Duration.between(start, Instant.now()).toMillis()
                    ));
         // Ошибки НЕ гасим: пробрасываем наружу

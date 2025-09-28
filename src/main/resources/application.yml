@@ -15,8 +15,11 @@ ignite:
   addresses: localhost:10800
   cache-name: partner_cache
 
+hazelcast:
+  cache-name: partner_cache
+
 warmup:
-  enabled: false
+  enabled: true
   records: 1_500_000
-  batch-size: 2_000
+  batch-size: 5_000
   block-until-done: true

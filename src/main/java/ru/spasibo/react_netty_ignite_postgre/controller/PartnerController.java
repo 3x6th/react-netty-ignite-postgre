@@ -47,4 +47,13 @@ public class PartnerController {
                       .doOnNext(m -> log.info("check result: {}", m));
     }
 
+    @GetMapping("/hazelcast")
+    public Mono<Map<String, Object>> checkHz(
+            @RequestParam String merchant,
+            @RequestParam String terminal) {
+        log.info("call");
+        return service.getFromHazelcast(merchant, terminal)
+                      .doOnNext(m -> log.info("check result: {}", m));
+    }
+
 }
